@@ -1901,28 +1901,30 @@ private protocol SignalAggregateStrategy {
 
 extension Signal {
 	private struct CombineLatestStrategy: SignalAggregateStrategy {
-		private struct Placeholder {}
+		private enum Placeholder {
+			case none
+		}
 
 		private var values: ContiguousArray<Any>
 		private var completionCount: Int
-		private var _isInitialized: Bool
 		private let action: (ContiguousArray<Any>) -> Void
 
-		private var isInitialized: Bool {
+		private var _hasAllSentInitial: Bool
+		private var hasAllSentInitial: Bool {
 			mutating get {
-				if _isInitialized {
+				if _hasAllSentInitial {
 					return true
 				}
 
-				_isInitialized = values.reduce(true, { $0 && !($1 is Placeholder) })
-				return _isInitialized
+				_hasAllSentInitial = values.reduce(true) { $0 && !($1 is Placeholder) }
+				return _hasAllSentInitial
 			}
 		}
 
 		mutating func update(_ value: Any, at position: Int) -> Bool {
 			values[position] = value
 
-			if isInitialized {
+			if hasAllSentInitial {
 				action(values)
 			}
 
@@ -1935,9 +1937,9 @@ extension Signal {
 		}
 
 		init(count: Int, action: @escaping (ContiguousArray<Any>) -> Void) {
-			values = ContiguousArray(repeating: Placeholder(), count: count)
+			values = ContiguousArray(repeating: Placeholder.none, count: count)
 			completionCount = 0
-			_isInitialized = false
+			_hasAllSentInitial = false
 			self.action = action
 		}
 	}
@@ -1947,10 +1949,14 @@ extension Signal {
 		private var isCompleted: ContiguousArray<Bool>
 		private let action: (ContiguousArray<Any>) -> Void
 
+		private var hasCompletedAndEmptiedSignal: Bool { return Swift.zip(values, isCompleted).contains(where: { $0.isEmpty && $1 }) }
+		private var canEmit: Bool { return values.reduce(true) { $0 && !$1.isEmpty } }
+		private var isAllCompleted: Bool { return isCompleted.reduce(true) { $0 && $1 } }
+
 		mutating func update(_ value: Any, at position: Int) -> Bool {
 			values[position].append(value)
 
-			if values.reduce(true, { $0 && !$1.isEmpty }) {
+			if canEmit {
 				var buffer = ContiguousArray<Any>()
 				buffer.reserveCapacity(values.count)
 
@@ -1960,7 +1966,7 @@ extension Signal {
 
 				action(buffer)
 
-				if Swift.zip(values, isCompleted).contains(where: { $0.isEmpty && $1 }) {
+				if hasCompletedAndEmptiedSignal {
 					return true
 				}
 			}
@@ -1973,8 +1979,7 @@ extension Signal {
 
 			// `zip` completes when all signals has completed, or any of the signals
 			// has completed without any buffered value.
-			return Swift.zip(values, isCompleted).contains { $0.isEmpty && $1 }
-				|| isCompleted.reduce(true) { $0 && $1 }
+			return hasCompletedAndEmptiedSignal || isAllCompleted
 		}
 
 		init(count: Int, action: @escaping (ContiguousArray<Any>) -> Void) {
